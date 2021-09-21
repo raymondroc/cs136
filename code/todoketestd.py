@@ -13,13 +13,15 @@ from messages import Upload, Request
 from util import even_split
 from peer import Peer
 
-class Dummy(Peer):
+class TodoketeStd(Peer):
     def post_init(self):
         print(("post_init(): %s here!" % self.id))
         self.dummy_state = dict()
         self.dummy_state["cake"] = "lie"
     
     def requests(self, peers, history):
+
+        print(history)
         """
         peers: available info about the peers (who has what pieces)
         history: what's happened so far as far as this peer can see
