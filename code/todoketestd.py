@@ -48,12 +48,10 @@ class TodoketeStd(Peer):
         logging.debug(str(history))
 
         requests = []   # We'll put all the things we want here
-        # Symmetry breaking is good...
-        random.shuffle(needed_pieces)
         
         # Sort peers by id.  This is probably not a useful sort, but other 
         # sorts might be useful
-        peers.sort(key=lambda p: p.id, reverse=True)
+        random.shuffle(peers)
 
         # Determine rarity of each piece (e.g. how many peers own each piece)
         rarity = defaultdict(int)
@@ -72,6 +70,8 @@ class TodoketeStd(Peer):
             
             # Ask for n rarest pieces, rarest first
             if len(isect) > 0:
+                # Break symmetry
+                random.shuffle(isect)
                 isect.sort(key = lambda x: rarity[x])
                 isect = isect[:n]
             for piece_id in isect:
