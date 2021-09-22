@@ -132,11 +132,13 @@ class TodoketeStd(Peer):
 
             # Every round except the first, select 3 requesting peers with highest download rate in the last 2 rounds
             if round >0:
-                
+
                 download_rates = defaultdict(int)
                 for download in history.downloads[-min(2, round)]:
                     if download.from_id in requesting_peers:
                         download_rates[download.from_id] += download.blocks
+                
+                # Break symmetry
                 l = list(download_rates.items())
                 random.shuffle(l)
                 download_rates = dict(l)
