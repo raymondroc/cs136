@@ -49,8 +49,7 @@ class TodoketeStd(Peer):
 
         requests = []   # We'll put all the things we want here
         
-        # Sort peers by id.  This is probably not a useful sort, but other 
-        # sorts might be useful
+        # Sort peers randomly
         random.shuffle(peers)
 
         # Determine rarity of each piece (e.g. how many peers own each piece)
@@ -124,30 +123,28 @@ class TodoketeStd(Peer):
             chosen.append(self.optimistic_unchoke)
             other_peers = list(filter(lambda x: x != self.optimistic_unchoke, other_peers))
 
-            # Every round, select 3 peers with highest download rate in the last 2 rounds
-            if len(other_peers) < 3:
-                chosen += other_peers
-            else:
-                if round < 2:
-                    # First and second round, select 3 at random
-                    chosen += [random.sample(other_peers, 3)]
-                else:
-                    download_rates = defaultdict(int)
-                    for download in history.downloads[-2]:
-                        if "Seed" not in download.from_id:
-                            download_rates[download.from_id] += download.blocks
-                    for download in history.downloads[-1]:
-                        if "Seed" not in download.from_id:
-                            download_rates[download.from_id] += download.blocks
-                    
-                if len(download_rates) < 3:
-                    chosen += list(download_rates.keys())
+            requesting_peers = list(filter(lambda x: x in [request.requester_id for request in requests]
+                and x != self.optimistic_unchoke, other_peers))
 
-                    # Fill the remaining slots with random peers
-                    other_peers = list(filter(lambda x: x not in chosen, other_peers))
-                    chosen += [random.sample(other_peers, 3-len(chosen))]
-                else:
-                    chosen += sorted(download_rates, key=download_rates.get, reverse=True)[:3]
+            # Every round, select 3 requesting peers with highest download rate in the last 2 rounds
+
+            if round < 2:
+                # First and second round, select 3 peers at random
+                chosen += [random.sample(other_peers, 3)]
+            else:
+                download_rates = defaultdict(int)
+                for download in history.downloads[-2]:
+                    if download.from_id in requesting_peers:
+                        download_rates[download.from_id] += download.blocks
+                for download in history.downloads[-1]:
+                    if download.from_id in requesting_peers:
+                        download_rates[download.from_id] += download.blocks
+                l = list(download_rates.items())
+                random.shuffle(l)
+                download_rates = dict(l)
+
+                n = min(3, len(download_rates))
+                chosen += sorted(download_rates, key=download_rates.get, reverse=True)[:n]                    
 
             # Evenly "split" my upload bandwidth among chosen requesters
             bws = even_split(self.up_bw, len(chosen))
@@ -155,4 +152,5 @@ class TodoketeStd(Peer):
         # create actual uploads out of the list of peer ids and bandwidths
         uploads = [Upload(self.id, peer_id, bw)
                    for (peer_id, bw) in zip(chosen, bws)]
+        print(f"Length of uploads: {len(uploads)}")
         return uploads
