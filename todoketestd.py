@@ -1,11 +1,5 @@
 #!/usr/bin/python
 
-# This is a dummy peer that just illustrates the available information your peers 
-# have available.
-
-# You'll want to copy this file to AgentNameXXX.py for various versions of XXX,
-# probably get rid of the silly logging messages, and then add more logic.
-
 import collections
 import random
 import logging
@@ -18,8 +12,6 @@ from collections import defaultdict
 class TodoketeStd(Peer):
     def post_init(self):
         print(("post_init(): %s here!" % self.id))
-        self.dummy_state = dict()
-        self.dummy_state["cake"] = "lie"
         self.optimistic_unchoke = None
     
     def requests(self, peers, history):
@@ -34,18 +26,6 @@ class TodoketeStd(Peer):
         needed = lambda i: self.pieces[i] < self.conf.blocks_per_piece
         needed_pieces = list(filter(needed, list(range(len(self.pieces)))))
         np_set = set(needed_pieces)  # sets support fast intersection ops.
-
-
-        logging.debug("%s here: still need pieces %s" % (
-            self.id, needed_pieces))
-
-        logging.debug("%s still here. Here are some peers:" % self.id)
-        for p in peers:
-            logging.debug("id: %s, available pieces: %s" % (p.id, p.available_pieces))
-
-        logging.debug("And look, I have my entire history available too:")
-        logging.debug("look at the AgentHistory class in history.py for details")
-        logging.debug(str(history))
 
         requests = []   # We'll put all the things we want here
         
@@ -94,21 +74,13 @@ class TodoketeStd(Peer):
         In each round, this will be called after requests().
         """
         round = history.current_round()
-        logging.debug("%s again.  It's round %d." % (
-            self.id, round))
-        # One could look at other stuff in the history too here.
-        # For example, history.downloads[round-1] (if round != 0, of course)
-        # has a list of Download objects for each Download to this peer in
-        # the previous round.
-        
+       
         if len(requests) == 0:
             logging.debug("No one wants my pieces!")
             chosen = []
             bws = []
         else:
-            logging.debug("Still here: uploading to a random peer")
-            # change my internal state for no reason
-            self.dummy_state["cake"] = "pie"
+            chosen = []
 
             other_peers = [peer.id for peer in peers]
             other_peers = list(filter(lambda x: "Seed" not in x and x != self.id, other_peers))
@@ -124,15 +96,14 @@ class TodoketeStd(Peer):
                 else:
                     self.optimistic_unchoke = random.choice(other_peers)
 
-            chosen = []
-            chosen.append(self.optimistic_unchoke)
-
-            # Remove optimistically unchoked peer from further consideration
-            requesting_peers = list(filter(lambda x: x != self.optimistic_unchoke, requesting_peers))
+            # Check if optimistically unchoked peer is requesting pieces; if not, then we don't need to give them bandwidth
+            if self.optimistic_unchoke in requesting_peers:
+                chosen.append(self.optimistic_unchoke)
+                # Remove optimistically unchoked peer from further consideration
+                requesting_peers = list(filter(lambda x: x != self.optimistic_unchoke, requesting_peers))
 
             # Every round except the first, select 3 requesting peers with highest download rate in the last 2 rounds
-            if round >0:
-
+            if round > 0:
                 download_rates = defaultdict(int)
                 for download in history.downloads[-min(2, round)]:
                     if download.from_id in requesting_peers:
@@ -147,7 +118,7 @@ class TodoketeStd(Peer):
                 chosen += sorted(download_rates, key=download_rates.get, reverse=True)[:n]                    
 
             # Evenly "split" my upload bandwidth among chosen requesters
-            bws = even_split(self.up_bw, len(chosen))
+            bws = even_split(self.up_bw, len(chosen)) if len(chosen) > 0 else []
 
         # create actual uploads out of the list of peer ids and bandwidths
         uploads = [Upload(self.id, peer_id, bw)
