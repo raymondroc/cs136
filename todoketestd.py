@@ -40,6 +40,7 @@ class TodoketeStd(Peer):
 
         # request all available pieces from all peers!
         # (up to self.max_requests from each)
+        random.shuffle(peers)
         for peer in peers:
             av_set = set(peer.available_pieces)
             isect = av_set.intersection(np_set)
