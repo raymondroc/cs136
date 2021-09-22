@@ -111,32 +111,30 @@ class TodoketeStd(Peer):
             self.dummy_state["cake"] = "pie"
 
             other_peers = [peer.id for peer in peers]
-            other_peers = list(filter(lambda x: "Seed" not in x, other_peers))
-            other_peers = list(filter(lambda x: x != self.id, other_peers))
+            other_peers = list(filter(lambda x: "Seed" not in x and x != self.id, other_peers))
+
+            # List of peers who have made requests
+            requesting_peers = [request.requester_id for request in requests]
 
             # Optimistic unchoking. Currently this starts from round 1 since there are no requests in round zero - should we change this?
-            if (round % 3) == 1:
-                # Every 3 rounds, select new peer to optimistically unchoke
-                self.optimistic_unchoke = random.choice(other_peers)
+            if (round % 3) == 0:
+                # Every 3 rounds, select new peer to optimistically unchoke (prioritize peer that has made a request)
+                if len(requesting_peers) > 0:
+                    self.optimistic_unchoke = random.choice(requesting_peers)
+                else:
+                    self.optimistic_unchoke = random.choice(other_peers)
 
             chosen = []
             chosen.append(self.optimistic_unchoke)
-            other_peers = list(filter(lambda x: x != self.optimistic_unchoke, other_peers))
 
-            requesting_peers = list(filter(lambda x: x in [request.requester_id for request in requests]
-                and x != self.optimistic_unchoke, other_peers))
+            # Remove optimistically unchoked peer from further consideration
+            requesting_peers = list(filter(lambda x: x != self.optimistic_unchoke, requesting_peers))
 
-            # Every round, select 3 requesting peers with highest download rate in the last 2 rounds
-
-            if round < 2:
-                # First and second round, select 3 peers at random
-                chosen += [random.sample(other_peers, 3)]
-            else:
+            # Every round except the first, select 3 requesting peers with highest download rate in the last 2 rounds
+            if round >0:
+                
                 download_rates = defaultdict(int)
-                for download in history.downloads[-2]:
-                    if download.from_id in requesting_peers:
-                        download_rates[download.from_id] += download.blocks
-                for download in history.downloads[-1]:
+                for download in history.downloads[-min(2, round)]:
                     if download.from_id in requesting_peers:
                         download_rates[download.from_id] += download.blocks
                 l = list(download_rates.items())
@@ -152,5 +150,4 @@ class TodoketeStd(Peer):
         # create actual uploads out of the list of peer ids and bandwidths
         uploads = [Upload(self.id, peer_id, bw)
                    for (peer_id, bw) in zip(chosen, bws)]
-        print(f"Length of uploads: {len(uploads)}")
         return uploads
