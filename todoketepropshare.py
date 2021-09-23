@@ -75,7 +75,7 @@ class TodoketePropShare(Peer):
 
         In each round, this will be called after requests().
         """
-        round = history.current_round()
+        current_round = history.current_round()
        
         if len(requests) == 0:
             logging.debug("No one wants my pieces!")
@@ -88,7 +88,7 @@ class TodoketePropShare(Peer):
             requesting_peers = [request.requester_id for request in requests]
 
             # Every round except the first, determine which requesting peers uploaded to us
-            if round > 0:
+            if current_round > 0:
                 download_rates = defaultdict(int)
                 for download in history.downloads[-1]:
                     if download.from_id in requesting_peers:
@@ -97,28 +97,34 @@ class TodoketePropShare(Peer):
                 chosen = sorted(download_rates, key = download_rates.get)
                 props = [download_rates[id] for id in chosen]
 
-            requesting_peers = list(filter(lambda x: x not in props, requesting_peers))
+            # If no requesting peers uploaded to us, split bandwidth evenly between requesting peers
+            if len(chosen) == 0:
+                chosen = requesting_peers
+                bws = even_split(self.up_bw, len(chosen))
 
-            # Determine if a requesting peer exists that didn't upload to us last round    
-            optimistic_unchoke = len(requesting_peers) > 0
+            else:
+                requesting_peers = list(filter(lambda x: x not in props, requesting_peers))
 
-            # Split upload bandwidth proportionally, accounting for optimistic unchoking.
-            bw_remaining = self.up_bw
-            if optimistic_unchoke:
-                optimistic_unchoke_bw = math.floor(self.up_bw * 0.1)
-                bw_remaining -= optimistic_unchoke_bw
-            
-            # Algorithm for allocating bandwidth, rounding to integers to ensure all bandwidth is being allocated
-            t = sum(props)
-            bws = []
-            for i in range(len(props)):
-                bws.append(round(props[i]) / t * bw_remaining)
-                t -= props[i]
-                bw_remaining -= bws[i]
-            
-            if optimistic_unchoke:
-                chosen += random.choice(requesting_peers)
-                bws.append(optimistic_unchoke_bw)
+                # Determine if a requesting peer exists that didn't upload to us last round    
+                optimistic_unchoke = len(requesting_peers) > 0
+
+                # Split upload bandwidth proportionally, accounting for optimistic unchoking.
+                bw_remaining = self.up_bw
+                if optimistic_unchoke:
+                    optimistic_unchoke_bw = math.floor(self.up_bw * 0.1)
+                    bw_remaining -= optimistic_unchoke_bw
+                
+                # Algorithm for allocating bandwidth, rounding to integers to ensure all bandwidth is being allocated
+                t = sum(props)
+                bws = []
+                for i in range(len(props)):
+                    bws.append(round(props[i] / t * bw_remaining))
+                    t -= props[i]
+                    bw_remaining -= bws[i]
+                
+                if optimistic_unchoke:
+                    chosen += random.choice(requesting_peers)
+                    bws.append(optimistic_unchoke_bw)
 
         # create actual uploads out of the list of peer ids and bandwidths
         uploads = [Upload(self.id, peer_id, bw)
