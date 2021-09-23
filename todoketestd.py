@@ -13,6 +13,7 @@ class TodoketeStd(Peer):
     def post_init(self):
         print(("post_init(): %s here!" % self.id))
         self.optimistic_unchoke = None
+        self.unchoke_counter = 0
     
     def requests(self, peers, history):
         """
@@ -83,19 +84,15 @@ class TodoketeStd(Peer):
         else:
             chosen = []
 
-            other_peers = [peer.id for peer in peers]
-            other_peers = list(filter(lambda x: "Seed" not in x and x != self.id, other_peers))
-
             # List of peers who have made requests
             requesting_peers = [request.requester_id for request in requests]
 
-            # Optimistic unchoking. Currently this starts from round 1 since there are no requests in round zero - should we change this?
-            if (round % 3) == 0:
-                # Every 3 rounds, select new peer to optimistically unchoke (prioritize peer that has made a request)
-                if len(requesting_peers) > 0:
+            # Optimistic unchoking
+            if len(requesting_peers) > 0:
+                # After unchoking a peer for 3 rounds, select new peer to optimistically unchoke
+                if (self.unchoke_counter % 3) == 0:
                     self.optimistic_unchoke = random.choice(requesting_peers)
-                else:
-                    self.optimistic_unchoke = random.choice(other_peers)
+                self.unchoke_counter += 1
 
             # Check if optimistically unchoked peer is requesting pieces; if not, then we don't need to give them bandwidth
             if self.optimistic_unchoke in requesting_peers:
@@ -116,7 +113,7 @@ class TodoketeStd(Peer):
                 download_rates = dict(l)
 
                 n = min(3, len(download_rates))
-                chosen += sorted(download_rates, key=download_rates.get, reverse=True)[:n]                    
+                chosen += sorted(download_rates, key=download_rates.get, reverse=True)[:n][::-1]                  
 
             # Evenly "split" my upload bandwidth among chosen requesters
             bws = even_split(self.up_bw, len(chosen)) if len(chosen) > 0 else []
