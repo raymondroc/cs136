@@ -1,23 +1,19 @@
 #!/usr/bin/python
 
-# This is a dummy peer that just illustrates the available information your peers 
-# have available.
-
-# You'll want to copy this file to AgentNameXXX.py for various versions of XXX,
-# probably get rid of the silly logging messages, and then add more logic.
-
+import collections
 import random
 import logging
+import math
 
 from messages import Upload, Request
 from util import even_split
 from peer import Peer
+from collections import defaultdict
 
 class TodoketePropShare(Peer):
     def post_init(self):
         print(("post_init(): %s here!" % self.id))
-        self.dummy_state = dict()
-        self.dummy_state["cake"] = "lie"
+        self.optimistic_unchoke = None
     
     def requests(self, peers, history):
         """
@@ -32,35 +28,34 @@ class TodoketePropShare(Peer):
         needed_pieces = list(filter(needed, list(range(len(self.pieces)))))
         np_set = set(needed_pieces)  # sets support fast intersection ops.
 
-
-        logging.debug("%s here: still need pieces %s" % (
-            self.id, needed_pieces))
-
-        logging.debug("%s still here. Here are some peers:" % self.id)
-        for p in peers:
-            logging.debug("id: %s, available pieces: %s" % (p.id, p.available_pieces))
-
-        logging.debug("And look, I have my entire history available too:")
-        logging.debug("look at the AgentHistory class in history.py for details")
-        logging.debug(str(history))
-
         requests = []   # We'll put all the things we want here
-        # Symmetry breaking is good...
-        random.shuffle(needed_pieces)
         
-        # Sort peers by id.  This is probably not a useful sort, but other 
-        # sorts might be useful
-        peers.sort(key=lambda p: p.id)
+        # Sort peers randomly
+        random.shuffle(peers)
+
+        # Determine rarity of each piece (e.g. how many peers own each piece)
+        rarity = defaultdict(int)
+        for peer in peers:
+            for piece_id in peer.available_pieces:
+                rarity[piece_id] += 1
+
         # request all available pieces from all peers!
         # (up to self.max_requests from each)
+        random.shuffle(peers)
         for peer in peers:
             av_set = set(peer.available_pieces)
             isect = av_set.intersection(np_set)
+            isect = list(isect)
+            
             n = min(self.max_requests, len(isect))
-            # More symmetry breaking -- ask for random pieces.
-            # This would be the place to try fancier piece-requesting strategies
-            # to avoid getting the same thing from multiple peers at a time.
-            for piece_id in random.sample(isect, n):
+            
+            # Ask for n rarest pieces, rarest first
+            if len(isect) > 0:
+                # Break symmetry
+                random.shuffle(isect)
+                isect.sort(key = lambda x: rarity[x])
+                isect = isect[:n]
+            for piece_id in isect:
                 # aha! The peer has this piece! Request it.
                 # which part of the piece do we need next?
                 # (must get the next-needed blocks in order)
@@ -80,31 +75,52 @@ class TodoketePropShare(Peer):
 
         In each round, this will be called after requests().
         """
-
         round = history.current_round()
-        logging.debug("%s again.  It's round %d." % (
-            self.id, round))
-        # One could look at other stuff in the history too here.
-        # For example, history.downloads[round-1] (if round != 0, of course)
-        # has a list of Download objects for each Download to this peer in
-        # the previous round.
-
+       
         if len(requests) == 0:
             logging.debug("No one wants my pieces!")
             chosen = []
             bws = []
         else:
-            logging.debug("Still here: uploading to a random peer")
-            # change my internal state for no reason
-            self.dummy_state["cake"] = "pie"
+            chosen = []
 
-            request = random.choice(requests)
-            chosen = [request.requester_id]
-            # Evenly "split" my upload bandwidth among the one chosen requester
-            bws = even_split(self.up_bw, len(chosen))
+            # List of peers who have made requests
+            requesting_peers = [request.requester_id for request in requests]
+
+            # Every round except the first, determine which requesting peers uploaded to us
+            if round > 0:
+                download_rates = defaultdict(int)
+                for download in history.downloads[-1]:
+                    if download.from_id in requesting_peers:
+                        download_rates[download.from_id] += download.blocks
+
+                chosen = sorted(download_rates, key = download_rates.get)
+                props = [download_rates[id] for id in chosen]
+
+            requesting_peers = list(filter(lambda x: x not in props, requesting_peers))
+
+            # Determine if a requesting peer exists that didn't upload to us last round    
+            optimistic_unchoke = len(requesting_peers) > 0
+
+            # Split upload bandwidth proportionally, accounting for optimistic unchoking.
+            bw_remaining = self.up_bw
+            if optimistic_unchoke:
+                optimistic_unchoke_bw = math.floor(self.up_bw * 0.1)
+                bw_remaining -= optimistic_unchoke_bw
+            
+            # Algorithm for allocating bandwidth, rounding to integers to ensure all bandwidth is being allocated
+            t = sum(props)
+            bws = []
+            for i in range(len(props)):
+                bws.append(round(props[i]) / t * bw_remaining)
+                t -= props[i]
+                bw_remaining -= bws[i]
+            
+            if optimistic_unchoke:
+                chosen += random.choice(requesting_peers)
+                bws.append(optimistic_unchoke_bw)
 
         # create actual uploads out of the list of peer ids and bandwidths
         uploads = [Upload(self.id, peer_id, bw)
                    for (peer_id, bw) in zip(chosen, bws)]
-            
         return uploads
