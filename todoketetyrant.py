@@ -79,13 +79,7 @@ class TodoketeTyrant(Peer):
         In each round, this will be called after requests().
         """
 
-        round = history.current_round()
-        logging.debug("%s again.  It's round %d." % (
-            self.id, round))
-        # One could look at other stuff in the history too here.
-        # For example, history.downloads[round-1] (if round != 0, of course)
-        # has a list of Download objects for each Download to this peer in
-        # the previous round.
+        current_round = history.current_round()
 
         if len(requests) == 0:
             logging.debug("No one wants my pieces!")
@@ -96,9 +90,9 @@ class TodoketeTyrant(Peer):
             # List of peers who have made requests
             requesting_peers = [request.requester_id for request in requests]
 
-            if round > 0:
+            if current_round > 0:
                 # Update download rate estimates for peers
-                prev_dls = history.downloads[round-1]
+                prev_dls = history.downloads[current_round-1]
                 dlr_updates = defaultdict(int) # Get peers who unchoked us
                 for dl in prev_dls:
                     dlr_updates[dl.from_id] += 1
@@ -106,7 +100,7 @@ class TodoketeTyrant(Peer):
                     self.dlr_ests[pid] = update
 
                 # Update upload rate estimates for peers
-                prev_uls = history.uploads[round-1]
+                prev_uls = history.uploads[current_round-1]
                 prev_unchoked = set() 
                 for ul in prev_uls:
                     prev_unchoked.add(ul.to_id)
@@ -115,8 +109,8 @@ class TodoketeTyrant(Peer):
                     if peer not in dlr_updates.keys():
                         self.ulr_ests[peer] = (1 + self.alpha) * self.ulr_ests[peer]
                     # If peer unchoked us for last r rounds, decrease ulr
-                    elif round >= self.r:
-                        for prev_round in history.downloads[round-self.r+1:round]:
+                    elif current_round >= self.r:
+                        for prev_round in history.downloads[current_round-self.r+1:current_round]:
                             last_r = False
                             for dl in prev_round:
                                 if dl.from_id == peer:

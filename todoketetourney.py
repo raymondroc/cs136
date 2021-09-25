@@ -1,23 +1,26 @@
 #!/usr/bin/python
 
-# This is a dummy peer that just illustrates the available information your peers 
-# have available.
-
-# You'll want to copy this file to AgentNameXXX.py for various versions of XXX,
-# probably get rid of the silly logging messages, and then add more logic.
-
 import random
 import logging
+import math
 
 from messages import Upload, Request
-from util import even_split
 from peer import Peer
+from collections import defaultdict
 
+# BitTyrant with Optimistic Unchoking
 class TodoketeTourney(Peer):
     def post_init(self):
         print(("post_init(): %s here!" % self.id))
-        self.dummy_state = dict()
-        self.dummy_state["cake"] = "lie"
+        self.alpha = 0.10
+        self.r = 4
+        self.gamma = 0.07
+        self.dinit = 15
+        self.uinit = 25
+        self.dlr_ests = defaultdict(lambda: self.dinit)
+        self.ulr_ests = defaultdict(lambda: self.uinit)
+        self.optimistic = math.floor(self.up_bw * 0.15)
+        self.optimistic_peer = None
     
     def requests(self, peers, history):
         """
@@ -32,35 +35,34 @@ class TodoketeTourney(Peer):
         needed_pieces = list(filter(needed, list(range(len(self.pieces)))))
         np_set = set(needed_pieces)  # sets support fast intersection ops.
 
-
-        logging.debug("%s here: still need pieces %s" % (
-            self.id, needed_pieces))
-
-        logging.debug("%s still here. Here are some peers:" % self.id)
-        for p in peers:
-            logging.debug("id: %s, available pieces: %s" % (p.id, p.available_pieces))
-
-        logging.debug("And look, I have my entire history available too:")
-        logging.debug("look at the AgentHistory class in history.py for details")
-        logging.debug(str(history))
-
         requests = []   # We'll put all the things we want here
-        # Symmetry breaking is good...
-        random.shuffle(needed_pieces)
         
-        # Sort peers by id.  This is probably not a useful sort, but other 
-        # sorts might be useful
-        peers.sort(key=lambda p: p.id)
+        # Sort peers randomly
+        random.shuffle(peers)
+
+        # Determine rarity of each piece (e.g. how many peers own each piece)
+        rarity = defaultdict(int)
+        for peer in peers:
+            for piece_id in peer.available_pieces:
+                rarity[piece_id] += 1
+
         # request all available pieces from all peers!
         # (up to self.max_requests from each)
+        random.shuffle(peers)
         for peer in peers:
             av_set = set(peer.available_pieces)
             isect = av_set.intersection(np_set)
+            isect = list(isect)
+            
             n = min(self.max_requests, len(isect))
-            # More symmetry breaking -- ask for random pieces.
-            # This would be the place to try fancier piece-requesting strategies
-            # to avoid getting the same thing from multiple peers at a time.
-            for piece_id in random.sample(isect, n):
+            
+            # Ask for n rarest pieces, rarest first
+            if len(isect) > 0:
+                # Break symmetry
+                random.shuffle(isect)
+                isect.sort(key = lambda x: rarity[x])
+                isect = isect[:n]
+            for piece_id in isect:
                 # aha! The peer has this piece! Request it.
                 # which part of the piece do we need next?
                 # (must get the next-needed blocks in order)
@@ -81,30 +83,82 @@ class TodoketeTourney(Peer):
         In each round, this will be called after requests().
         """
 
-        round = history.current_round()
-        logging.debug("%s again.  It's round %d." % (
-            self.id, round))
-        # One could look at other stuff in the history too here.
-        # For example, history.downloads[round-1] (if round != 0, of course)
-        # has a list of Download objects for each Download to this peer in
-        # the previous round.
+        current_round = history.current_round()
 
         if len(requests) == 0:
             logging.debug("No one wants my pieces!")
             chosen = []
             bws = []
         else:
-            logging.debug("Still here: uploading to a random peer")
-            # change my internal state for no reason
-            self.dummy_state["cake"] = "pie"
+            
+            # List of peers who have made requests
+            requesting_peers = [request.requester_id for request in requests]
 
-            request = random.choice(requests)
-            chosen = [request.requester_id]
-            # Evenly "split" my upload bandwidth among the one chosen requester
-            bws = even_split(self.up_bw, len(chosen))
+            chosen = []
+            bws = []
+            bw_remaining = self.up_bw
 
-        # create actual uploads out of the list of peer ids and bandwidths
+            # Optimistic unchoking every 3 rounds
+            if not current_round % 3:
+                self.optimistic_peer = random.choice(requesting_peers)
+                if self.optimistic_peer:
+                    chosen = [self.optimistic_peer]
+                    bws = [self.optimistic]
+                    bw_remaining -= self.optimistic
+                    requesting_peers.remove(self.optimistic_peer)
+            elif current_round > 0 and self.optimistic_peer:
+                chosen = [self.optimistic_peer]
+                # Make sure optimistic unchoking peer is still requesting something before giving bandwidth
+                if chosen[0] in requesting_peers:
+                    bws = [self.optimistic] 
+                    bw_remaining -= self.optimistic
+                    requesting_peers.remove(self.optimistic_peer)
+                else:
+                    bws = [0]
+
+            if current_round > 0:
+                # Update download rate estimates for peers
+                prev_dls = history.downloads[current_round-1]
+                dlr_updates = defaultdict(int) # Get peers who unchoked us
+                for dl in prev_dls:
+                    dlr_updates[dl.from_id] += 1
+                for pid, update in dlr_updates.items():
+                    self.dlr_ests[pid] = update
+
+                # Update upload rate estimates for peers
+                prev_uls = history.uploads[current_round-1]
+                prev_unchoked = set() 
+                for ul in prev_uls:
+                    prev_unchoked.add(ul.to_id)
+                for peer in prev_unchoked:
+                    # If peer didn't unchoke us, increase ulr
+                    if peer not in dlr_updates.keys():
+                        self.ulr_ests[peer] = (1 + self.alpha) * self.ulr_ests[peer]
+                    # If peer unchoked us for last r rounds, decrease ulr
+                    elif current_round >= self.r:
+                        for prev_round in history.downloads[current_round-self.r+1:current_round]:
+                            last_r = False
+                            for dl in prev_round:
+                                if dl.from_id == peer:
+                                    last_r = True
+                                    break
+                            if not last_r:
+                                break
+                        if last_r:
+                            self.ulr_ests[peer] = (1 - self.gamma) * self.ulr_ests[peer]
+                    
+            # Sort requesting peers by decreasing dlr/ulr
+            requesting_peers = sorted(requesting_peers, key=lambda peer: self.dlr_ests[peer]/self.ulr_ests[peer], reverse=True)
+            
+            # Add upload slots until cap is reached
+            for peer in requesting_peers:
+                bw_remaining -= self.ulr_ests[peer]
+                if bw_remaining < 0:
+                    break
+                chosen.append(peer)
+                bws.append(self.ulr_ests[peer])
+
+        # Create actual uploads out of the list of peer ids and bandwidths
         uploads = [Upload(self.id, peer_id, bw)
                    for (peer_id, bw) in zip(chosen, bws)]
-            
         return uploads
