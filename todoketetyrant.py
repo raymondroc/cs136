@@ -4,19 +4,19 @@ import random
 import logging
 
 from messages import Upload, Request
-from util import even_split
 from peer import Peer
 from collections import defaultdict
 
 class TodoketeTyrant(Peer):
-    
     def post_init(self):
         print(("post_init(): %s here!" % self.id))
-        self.alpha = 0.20
-        self.r = 3
-        self.gamma = 0.10
-        self.dinit = 3
-        self.uinit = 3
+        self.alpha = 0.10
+        self.r = 4
+        self.gamma = 0.07
+        self.dinit = 15
+        self.uinit = 25
+        self.dlr_ests = defaultdict(lambda: self.dinit)
+        self.ulr_ests = defaultdict(lambda: self.uinit)
     
     def requests(self, peers, history):
         """
@@ -96,48 +96,50 @@ class TodoketeTyrant(Peer):
             # List of peers who have made requests
             requesting_peers = [request.requester_id for request in requests]
 
-            # Create download rate estimates for peers
-            dlr_ests = defaultdict(int)
-            for peer in peers:
-                dlr_ests[peer] = self.dinit
-                for round_dls in reversed(history.downloads[peer]):
-                    if round_dls:
-                        dlr_ests[peer] = len(round_dls)
-                        break
-                    
-            # Create upload rate estimates for peers
-            ulr_ests = defaultdict(int)
-            for peer in requesting_peers:
-                ulr = self.uinit
-                for idx, round_uls in enumerate(history.uploads[peer]):
-                    # If we unchoked peer, update
-                    if round_uls: 
-                        # If peer didn't unchoke us, increase ulr
-                        if not history.downloads[peer][idx]:
-                            ulr = (1 + self.alpha) * ulr
-                        # If peer unchoked us for last r rounds, decrease ulr
-                        elif round >= self.r:
-                            last_r = True
-                            for prev_round in reversed(history.downloads[peer][idx-self.r+1:idx]):
-                                if not prev_round:
-                                    last_r = False
-                            if last_r:
-                                ulr = (1 - self.gamma) * ulr
-                ulr_ests[peer] = ulr
+            if round > 0:
+                # Update download rate estimates for peers
+                prev_dls = history.downloads[round-1]
+                dlr_updates = defaultdict(int) # Get peers who unchoked us
+                for dl in prev_dls:
+                    dlr_updates[dl.from_id] += 1
+                for pid, update in dlr_updates.items():
+                    self.dlr_ests[pid] = update
 
+                # Update upload rate estimates for peers
+                prev_uls = history.uploads[round-1]
+                prev_unchoked = set() 
+                for ul in prev_uls:
+                    prev_unchoked.add(ul.to_id)
+                for peer in prev_unchoked:
+                    # If peer didn't unchoke us, increase ulr
+                    if peer not in dlr_updates.keys():
+                        self.ulr_ests[peer] = (1 + self.alpha) * self.ulr_ests[peer]
+                    # If peer unchoked us for last r rounds, decrease ulr
+                    elif round >= self.r:
+                        for prev_round in history.downloads[round-self.r+1:round]:
+                            last_r = False
+                            for dl in prev_round:
+                                if dl.from_id == peer:
+                                    last_r = True
+                                    break
+                            if not last_r:
+                                break
+                        if last_r:
+                            self.ulr_ests[peer] = (1 - self.gamma) * self.ulr_ests[peer]
+                    
             # Sort requesting peers by decreasing dlr/ulr
-            requesting_peers = sorted(requesting_peers, key=lambda peer: dlr_ests[peer]/ulr_ests[peer], reverse=True)
+            requesting_peers = sorted(requesting_peers, key=lambda peer: self.dlr_ests[peer]/self.ulr_ests[peer], reverse=True)
             
             # Add upload slots until cap is reached
             chosen = []
             bws = []
             bw_remaining = self.up_bw
             for peer in requesting_peers:
-                bw_remaining -= ulr_ests[peer]
+                bw_remaining -= self.ulr_ests[peer]
                 if bw_remaining < 0:
                     break
                 chosen.append(peer)
-                bws.append(ulr_ests[peer])
+                bws.append(self.ulr_ests[peer])
 
         # Create actual uploads out of the list of peer ids and bandwidths
         uploads = [Upload(self.id, peer_id, bw)
